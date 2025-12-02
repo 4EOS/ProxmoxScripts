@@ -33,7 +33,7 @@ else
     exit 1
 fi
 
-read -p "Enter the full path to the Windows ISO: " ISO_PATH
+read -p "Enter the full path to the Windows ISO: " ISO_PATH < /dev/tty
 if [ ! -f "$ISO_PATH" ]; then
     echo -e "${RED}ISO file not found: $ISO_PATH${NC}"
     exit 1
@@ -41,14 +41,14 @@ fi
 
 # Prompt for VM ID
 echo -e "\n${BLUE}=== Step 2: VM Identification ===${NC}"
-read -p "Enter VM ID (100-999999): " VMID
+read -p "Enter VM ID (100-999999): " VMID < /dev/tty
 if qm status $VMID &>/dev/null; then
     echo -e "${RED}VM ID $VMID already exists!${NC}"
     exit 1
 fi
 
 # Prompt for VM Name
-read -p "Enter VM Name: " VMNAME
+read -p "Enter VM Name: " VMNAME < /dev/tty
 if [ -z "$VMNAME" ]; then
     echo -e "${RED}VM Name cannot be empty${NC}"
     exit 1
@@ -56,20 +56,20 @@ fi
 
 # Prompt for Resources
 echo -e "\n${BLUE}=== Step 3: Resource Allocation ===${NC}"
-read -p "Enter Memory in MB (default: 4096): " MEMORY
+read -p "Enter Memory in MB (default: 4096): " MEMORY < /dev/tty
 MEMORY=${MEMORY:-4096}
 
-read -p "Enter number of CPU cores (default: 2): " CORES
+read -p "Enter number of CPU cores (default: 2): " CORES < /dev/tty
 CORES=${CORES:-2}
 
-read -p "Enter number of CPU sockets (default: 1): " SOCKETS
+read -p "Enter number of CPU sockets (default: 1): " SOCKETS < /dev/tty
 SOCKETS=${SOCKETS:-1}
 
 # Prompt for CPU Type
 echo -e "\n${YELLOW}CPU Type options:${NC}"
 echo "1) host (best performance, recommended)"
 echo "2) kvm64 (better compatibility for migration)"
-read -p "Select CPU type [1-2] (default: 1): " CPU_CHOICE
+read -p "Select CPU type [1-2] (default: 1): " CPU_CHOICE < /dev/tty
 case $CPU_CHOICE in
     2) CPU_TYPE="kvm64" ;;
     *) CPU_TYPE="host" ;;
@@ -81,7 +81,7 @@ echo -e "${YELLOW}Available storage:${NC}"
 pvesm status | grep -v "^[[:space:]]*$"
 echo ""
 
-read -p "Enter storage location (default: local-lvm): " STORAGE
+read -p "Enter storage location (default: local-lvm): " STORAGE < /dev/tty
 STORAGE=${STORAGE:-local-lvm}
 
 # Verify storage exists
@@ -89,7 +89,7 @@ if ! pvesm status | grep -q "^$STORAGE "; then
     echo -e "${YELLOW}Warning: Storage '$STORAGE' not found in list, continuing anyway...${NC}"
 fi
 
-read -p "Enter disk size in GB (default: 100): " DISKSIZE
+read -p "Enter disk size in GB (default: 100): " DISKSIZE < /dev/tty
 DISKSIZE=${DISKSIZE:-100}
 
 # Prompt for SCSI Controller Type
@@ -97,15 +97,15 @@ echo -e "\n${YELLOW}SCSI Controller Type:${NC}"
 echo "1) LSI Logic SAS (native Windows support, recommended for easy setup)"
 echo "2) VirtIO SCSI (best performance, requires VirtIO drivers during install)"
 echo "3) MegaRAID SAS (alternative with good performance)"
-read -p "Select SCSI controller [1-3] (default: 1): " SCSI_CHOICE
+read -p "Select SCSI controller [1-3] (default: 1): " SCSI_CHOICE < /dev/tty
 case $SCSI_CHOICE in
     2) 
         SCSIHW="virtio-scsi-pci"
         echo -e "${YELLOW}Note: You'll need VirtIO drivers during Windows installation!${NC}"
         echo "Download from: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/"
-        read -p "Do you have VirtIO driver ISO available? (y/n): " HAS_VIRTIO
+        read -p "Do you have VirtIO driver ISO available? (y/n): " HAS_VIRTIO < /dev/tty
         if [[ $HAS_VIRTIO =~ ^[Yy]$ ]]; then
-            read -p "Enter path to VirtIO driver ISO: " VIRTIO_ISO
+            read -p "Enter path to VirtIO driver ISO: " VIRTIO_ISO < /dev/tty
             if [ ! -f "$VIRTIO_ISO" ]; then
                 echo -e "${RED}VirtIO ISO not found, continuing without it${NC}"
                 VIRTIO_ISO=""
@@ -118,12 +118,12 @@ esac
 
 # Network Configuration
 echo -e "\n${BLUE}=== Step 5: Network Configuration ===${NC}"
-read -p "Enter network bridge (default: vmbr0): " BRIDGE
+read -p "Enter network bridge (default: vmbr0): " BRIDGE < /dev/tty
 BRIDGE=${BRIDGE:-vmbr0}
 
-read -p "Set static MAC address? (y/n, default: n): " SET_MAC
+read -p "Set static MAC address? (y/n, default: n): " SET_MAC < /dev/tty
 if [[ $SET_MAC =~ ^[Yy]$ ]]; then
-    read -p "Enter MAC address (format: XX:XX:XX:XX:XX:XX): " MAC_ADDR
+    read -p "Enter MAC address (format: XX:XX:XX:XX:XX:XX): " MAC_ADDR < /dev/tty
     NET_CONFIG="virtio,bridge=$BRIDGE,macaddr=$MAC_ADDR"
 else
     NET_CONFIG="virtio,bridge=$BRIDGE"
@@ -135,7 +135,7 @@ echo -e "${YELLOW}VGA Type options:${NC}"
 echo "1) qxl (best for SPICE, recommended for Windows)"
 echo "2) std (standard VGA)"
 echo "3) virtio (better for Linux guests)"
-read -p "Select VGA type [1-3] (default: 1): " VGA_CHOICE
+read -p "Select VGA type [1-3] (default: 1): " VGA_CHOICE < /dev/tty
 case $VGA_CHOICE in
     2) VGA_TYPE="std" ;;
     3) VGA_TYPE="virtio" ;;
@@ -146,7 +146,7 @@ esac
 echo -e "\n${YELLOW}BIOS Type:${NC}"
 echo "1) SeaBIOS (legacy BIOS, better compatibility)"
 echo "2) OVMF (UEFI, required for Windows 11, Secure Boot)"
-read -p "Select BIOS type [1-2] (default: 1): " BIOS_CHOICE
+read -p "Select BIOS type [1-2] (default: 1): " BIOS_CHOICE < /dev/tty
 case $BIOS_CHOICE in
     2) 
         BIOS_TYPE="ovmf"
@@ -161,10 +161,10 @@ esac
 
 # Additional Options
 echo -e "\n${BLUE}=== Step 7: Additional Options ===${NC}"
-read -p "Enable QEMU Guest Agent? (recommended) (y/n, default: y): " ENABLE_AGENT
+read -p "Enable QEMU Guest Agent? (recommended) (y/n, default: y): " ENABLE_AGENT < /dev/tty
 ENABLE_AGENT=${ENABLE_AGENT:-y}
 
-read -p "Set VM to start on boot? (y/n, default: n): " START_ON_BOOT
+read -p "Set VM to start on boot? (y/n, default: n): " START_ON_BOOT < /dev/tty
 START_ON_BOOT=${START_ON_BOOT:-n}
 
 # Summary
@@ -189,7 +189,7 @@ echo -e "${YELLOW}Guest Agent:${NC} $([[ $ENABLE_AGENT =~ ^[Yy]$ ]] && echo 'Ena
 echo -e "${YELLOW}Start on Boot:${NC} $([[ $START_ON_BOOT =~ ^[Yy]$ ]] && echo 'Yes' || echo 'No')"
 echo ""
 
-read -p "Create VM with these settings? (y/n): " CONFIRM
+read -p "Create VM with these settings? (y/n): " CONFIRM < /dev/tty
 if [[ ! $CONFIRM =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}Aborted.${NC}"
     exit 0
@@ -258,7 +258,7 @@ echo -e "${GREEN}║   VM $VMID Created Successfully! ✓     ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════╝${NC}\n"
 
 # Ask if user wants to start the VM
-read -p "Start VM now? (y/n): " START_VM
+read -p "Start VM now? (y/n): " START_VM < /dev/tty
 if [[ $START_VM =~ ^[Yy]$ ]]; then
     qm start $VMID
     echo -e "${GREEN}VM $VMID started!${NC}"
