@@ -1,278 +1,354 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Proxmox Windows VM Creator v2.0
+# Interactive Windows VM creation with whiptail menus
 
-# Proxmox Windows VM Creator
+function header_info {
+  clear
+  cat <<"EOF"
+ _       ___           __                     _    ____  ___
+| |     / (_)___  ____/ /___ _      _______  | |  / /  |/  /
+| | /| / / / __ \/ __  / __ \ | /| / / ___/  | | / / /|_/ / 
+| |/ |/ / / / / / /_/ / /_/ / |/ |/ (__  )   | |/ / /  / /  
+|__/|__/_/_/ /_/\__,_/\____/|__/|__/____/    |___/_/  /_/   
+                                                              
+EOF
+}
 
-set -e
+set -eEuo pipefail
+shopt -s expand_aliases
+alias die='EXIT=$? LINE=$LINENO error_exit'
+trap die ERR
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+function error_exit() {
+  trap - ERR
+  local DEFAULT='Unknown failure occurred.'
+  local REASON="\e[97m${1:-$DEFAULT}\e[39m"
+  local FLAG="\e[91m[ERROR] \e[93m$EXIT@$LINE"
+  msg "$FLAG $REASON" 1>&2
+  [ ! -z ${VMID-} ] && cleanup_vm
+  exit $EXIT
+}
 
-# Check if running as root or with sudo
+function warn() {
+  local REASON="\e[97m$1\e[39m"
+  local FLAG="\e[93m[WARNING]\e[39m"
+  msg "$FLAG $REASON"
+}
+
+function info() {
+  local REASON="$1"
+  local FLAG="\e[36m[INFO]\e[39m"
+  msg "$FLAG $REASON"
+}
+
+function msg() {
+  local TEXT="$1"
+  echo -e "$TEXT"
+}
+
+function cleanup_vm() {
+  if qm status $VMID &>/dev/null; then
+    if [ "$(qm status $VMID | awk '{print $2}')" == "running" ]; then
+      qm stop $VMID
+    fi
+    qm destroy $VMID
+  fi
+}
+
+# Check if running as root
 if [ "$EUID" -ne 0 ]; then 
-    echo -e "${RED}Please run as root or with sudo${NC}"
-    exit 1
+    die "Please run as root or with sudo"
 fi
 
-echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  Proxmox Windows VM Creator v1.0       ║${NC}"
-echo -e "${GREEN}╚════════════════════════════════════════╝${NC}\n"
+# Function to select storage
+function select_storage() {
+  local USAGE=$1
+  local MSG_MAX_LENGTH=0
+  local -a MENU
 
-# List available ISOs
-echo -e "${BLUE}=== Step 1: Select ISO ===${NC}"
-ISO_DIR="/var/lib/vz/template/iso"
-if [ -d "$ISO_DIR" ]; then
-    echo -e "${YELLOW}Available ISO files:${NC}"
-    ls -lh "$ISO_DIR"/*.iso 2>/dev/null | awk '{print NR") " $9 " (" $5 ")"}' || echo "No ISOs found in $ISO_DIR"
-    echo ""
-else
-    echo -e "${RED}ISO directory not found: $ISO_DIR${NC}"
-    exit 1
-fi
+  while read -r line; do
+    local TAG=$(echo $line | awk '{print $1}')
+    local TYPE=$(echo $line | awk '{printf "%-10s", $2}')
+    local FREE=$(echo $line | numfmt --field 4-6 --from-unit=K --to=iec --format %.2f | awk '{printf( "%9sB", $6)}')
+    local ITEM="  Type: $TYPE Free: $FREE "
+    local OFFSET=2
+    if [[ $((${#ITEM} + $OFFSET)) -gt ${MSG_MAX_LENGTH:-} ]]; then
+      MSG_MAX_LENGTH=$((${#ITEM} + $OFFSET))
+    fi
+    MENU+=("$TAG" "$ITEM" "OFF")
+  done < <(pvesm status -content images | awk 'NR>1')
 
-read -p "Enter the full path to the Windows ISO: " ISO_PATH < /dev/tty
-if [ ! -f "$ISO_PATH" ]; then
-    echo -e "${RED}ISO file not found: $ISO_PATH${NC}"
-    exit 1
-fi
+  if [ $((${#MENU[@]} / 3)) -eq 0 ]; then
+    die "No storage locations available for VM disks."
+  elif [ $((${#MENU[@]} / 3)) -eq 1 ]; then
+    printf ${MENU[0]}
+  else
+    local STORAGE
+    STORAGE=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Storage Selection" --radiolist \
+      "Select storage for $USAGE:\n" \
+      16 $(($MSG_MAX_LENGTH + 23)) 6 \
+      "${MENU[@]}" 3>&1 1>&2 2>&3) || die "Storage selection cancelled."
+    printf $STORAGE
+  fi
+}
 
-# Prompt for VM ID
-echo -e "\n${BLUE}=== Step 2: VM Identification ===${NC}"
-read -p "Enter VM ID (100-999999): " VMID < /dev/tty
+# Function to select ISO
+function select_iso() {
+  local ISO_DIR="/var/lib/vz/template/iso"
+  local MSG_MAX_LENGTH=0
+  local -a MENU
+
+  if [ ! -d "$ISO_DIR" ]; then
+    die "ISO directory not found: $ISO_DIR"
+  fi
+
+  while IFS= read -r iso_file; do
+    local BASENAME=$(basename "$iso_file")
+    local SIZE=$(ls -lh "$iso_file" | awk '{print $5}')
+    local ITEM="  Size: $SIZE"
+    local OFFSET=2
+    if [[ $((${#ITEM} + $OFFSET)) -gt ${MSG_MAX_LENGTH:-} ]]; then
+      MSG_MAX_LENGTH=$((${#ITEM} + $OFFSET))
+    fi
+    MENU+=("$iso_file" "$ITEM" "OFF")
+  done < <(find "$ISO_DIR" -maxdepth 1 -name "*.iso" 2>/dev/null | sort)
+
+  if [ $((${#MENU[@]} / 3)) -eq 0 ]; then
+    die "No ISO files found in $ISO_DIR. Please upload a Windows ISO first."
+  fi
+
+  local ISO
+  ISO=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "ISO Selection" --radiolist \
+    "Select Windows ISO:\n" \
+    20 $(($MSG_MAX_LENGTH + 58)) 12 \
+    "${MENU[@]}" 3>&1 1>&2 2>&3) || die "ISO selection cancelled."
+  printf "$ISO"
+}
+
+header_info
+echo "Loading..."
+
+# Confirm creation
+whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Windows VM Creation" --yesno \
+  "This will create a new Windows VM on this Proxmox host.\n\nProceed?" 10 60 || die "Cancelled by user."
+
+# Get next available VM ID or allow custom
+NEXT_VMID=$(pvesh get /cluster/nextid)
+VMID=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "VM ID" --inputbox \
+  "Enter VM ID (or press Enter for next available: $NEXT_VMID):" 10 60 "$NEXT_VMID" 3>&1 1>&2 2>&3) || die "VM ID input cancelled."
+
+# Validate VM ID doesn't exist
 if qm status $VMID &>/dev/null; then
-    echo -e "${RED}VM ID $VMID already exists!${NC}"
-    exit 1
+  die "VM ID $VMID already exists!"
 fi
 
-# Prompt for VM Name
-read -p "Enter VM Name: " VMNAME < /dev/tty
-if [ -z "$VMNAME" ]; then
-    echo -e "${RED}VM Name cannot be empty${NC}"
-    exit 1
+# Get VM Name
+VMNAME=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "VM Name" --inputbox \
+  "Enter VM Name:" 10 60 "Windows-VM" 3>&1 1>&2 2>&3) || die "VM name input cancelled."
+
+[ -z "$VMNAME" ] && die "VM name cannot be empty"
+
+# Select Windows ISO
+ISO_PATH=$(select_iso)
+info "Selected ISO: $ISO_PATH"
+
+# Memory configuration
+MEMORY=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Memory Allocation" --inputbox \
+  "Enter memory in MB:" 10 60 "4096" 3>&1 1>&2 2>&3) || die "Memory input cancelled."
+
+# CPU Cores
+CORES=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "CPU Cores" --inputbox \
+  "Enter number of CPU cores:" 10 60 "2" 3>&1 1>&2 2>&3) || die "CPU cores input cancelled."
+
+# CPU Sockets
+SOCKETS=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "CPU Sockets" --inputbox \
+  "Enter number of CPU sockets:" 10 60 "1" 3>&1 1>&2 2>&3) || die "CPU sockets input cancelled."
+
+# CPU Type
+CPU_TYPE=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "CPU Type" --radiolist \
+  "Select CPU type:\n" 12 60 2 \
+  "host" "Best performance (recommended)" ON \
+  "kvm64" "Better migration compatibility" OFF \
+  3>&1 1>&2 2>&3) || die "CPU type selection cancelled."
+
+# Storage selection
+STORAGE=$(select_storage "VM disk")
+info "Using storage: $STORAGE"
+
+# Disk size
+DISKSIZE=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Disk Size" --inputbox \
+  "Enter disk size in GB:" 10 60 "100" 3>&1 1>&2 2>&3) || die "Disk size input cancelled."
+
+# SCSI Controller
+SCSIHW=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "SCSI Controller" --radiolist \
+  "Select SCSI controller type:\n" 14 70 3 \
+  "lsi" "LSI Logic SAS (recommended, native Windows)" ON \
+  "virtio-scsi-pci" "VirtIO SCSI (best performance, needs drivers)" OFF \
+  "megasas" "MegaRAID SAS" OFF \
+  3>&1 1>&2 2>&3) || die "SCSI controller selection cancelled."
+
+# Check for VirtIO ISO if needed
+VIRTIO_ISO=""
+if [ "$SCSIHW" == "virtio-scsi-pci" ]; then
+  if whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "VirtIO Drivers" --yesno \
+    "VirtIO SCSI requires drivers during Windows installation.\n\nDo you have the VirtIO driver ISO available?" 12 60; then
+    
+    # Try to find VirtIO ISO automatically
+    VIRTIO_FOUND=$(find /var/lib/vz/template/iso -name "*virtio*.iso" 2>/dev/null | head -n1)
+    if [ -n "$VIRTIO_FOUND" ]; then
+      VIRTIO_ISO="$VIRTIO_FOUND"
+      info "Found VirtIO ISO: $VIRTIO_ISO"
+    else
+      warn "No VirtIO ISO found automatically. Download from: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/"
+    fi
+  fi
 fi
 
-# Prompt for Resources
-echo -e "\n${BLUE}=== Step 3: Resource Allocation ===${NC}"
-read -p "Enter Memory in MB (default: 4096): " MEMORY < /dev/tty
-MEMORY=${MEMORY:-4096}
+# Network Bridge
+BRIDGE=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Network Bridge" --inputbox \
+  "Enter network bridge:" 10 60 "vmbr0" 3>&1 1>&2 2>&3) || die "Network bridge input cancelled."
 
-read -p "Enter number of CPU cores (default: 2): " CORES < /dev/tty
-CORES=${CORES:-2}
+# VGA Type
+VGA_TYPE=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Display Type" --radiolist \
+  "Select VGA type:\n" 13 70 3 \
+  "qxl" "QXL (best for Windows/SPICE)" ON \
+  "std" "Standard VGA" OFF \
+  "virtio" "VirtIO (better for Linux)" OFF \
+  3>&1 1>&2 2>&3) || die "VGA type selection cancelled."
 
-read -p "Enter number of CPU sockets (default: 1): " SOCKETS < /dev/tty
-SOCKETS=${SOCKETS:-1}
+# BIOS Type
+BIOS_TYPE=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "BIOS Type" --radiolist \
+  "Select BIOS type:\n" 12 70 2 \
+  "seabios" "SeaBIOS (legacy BIOS, compatible)" ON \
+  "ovmf" "OVMF (UEFI, required for Windows 11)" OFF \
+  3>&1 1>&2 2>&3) || die "BIOS type selection cancelled."
 
-# Prompt for CPU Type
-echo -e "\n${YELLOW}CPU Type options:${NC}"
-echo "1) host (best performance, recommended)"
-echo "2) kvm64 (better compatibility for migration)"
-read -p "Select CPU type [1-2] (default: 1): " CPU_CHOICE < /dev/tty
-case $CPU_CHOICE in
-    2) CPU_TYPE="kvm64" ;;
-    *) CPU_TYPE="host" ;;
-esac
-
-# List available storage
-echo -e "\n${BLUE}=== Step 4: Storage Configuration ===${NC}"
-echo -e "${YELLOW}Available storage:${NC}"
-pvesm status | grep -v "^[[:space:]]*$"
-echo ""
-
-read -p "Enter storage location (default: local-lvm): " STORAGE < /dev/tty
-STORAGE=${STORAGE:-local-lvm}
-
-# Verify storage exists
-if ! pvesm status | grep -q "^$STORAGE "; then
-    echo -e "${YELLOW}Warning: Storage '$STORAGE' not found in list, continuing anyway...${NC}"
+# Additional options
+ENABLE_AGENT=0
+if whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "QEMU Guest Agent" --yesno \
+  "Enable QEMU Guest Agent?\n(Recommended for better VM integration)" 10 60; then
+  ENABLE_AGENT=1
 fi
 
-read -p "Enter disk size in GB (default: 100): " DISKSIZE < /dev/tty
-DISKSIZE=${DISKSIZE:-100}
-
-# Prompt for SCSI Controller Type
-echo -e "\n${YELLOW}SCSI Controller Type:${NC}"
-echo "1) LSI Logic SAS (native Windows support, recommended for easy setup)"
-echo "2) VirtIO SCSI (best performance, requires VirtIO drivers during install)"
-echo "3) MegaRAID SAS (alternative with good performance)"
-read -p "Select SCSI controller [1-3] (default: 1): " SCSI_CHOICE < /dev/tty
-case $SCSI_CHOICE in
-    2) 
-        SCSIHW="virtio-scsi-pci"
-        echo -e "${YELLOW}Note: You'll need VirtIO drivers during Windows installation!${NC}"
-        echo "Download from: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/"
-        read -p "Do you have VirtIO driver ISO available? (y/n): " HAS_VIRTIO < /dev/tty
-        if [[ $HAS_VIRTIO =~ ^[Yy]$ ]]; then
-            read -p "Enter path to VirtIO driver ISO: " VIRTIO_ISO < /dev/tty
-            if [ ! -f "$VIRTIO_ISO" ]; then
-                echo -e "${RED}VirtIO ISO not found, continuing without it${NC}"
-                VIRTIO_ISO=""
-            fi
-        fi
-        ;;
-    3) SCSIHW="megasas" ;;
-    *) SCSIHW="lsi" ;;
-esac
-
-# Network Configuration
-echo -e "\n${BLUE}=== Step 5: Network Configuration ===${NC}"
-read -p "Enter network bridge (default: vmbr0): " BRIDGE < /dev/tty
-BRIDGE=${BRIDGE:-vmbr0}
-
-read -p "Set static MAC address? (y/n, default: n): " SET_MAC < /dev/tty
-if [[ $SET_MAC =~ ^[Yy]$ ]]; then
-    read -p "Enter MAC address (format: XX:XX:XX:XX:XX:XX): " MAC_ADDR < /dev/tty
-    NET_CONFIG="virtio,bridge=$BRIDGE,macaddr=$MAC_ADDR"
-else
-    NET_CONFIG="virtio,bridge=$BRIDGE"
+START_ON_BOOT=0
+if whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Start on Boot" --yesno \
+  "Start VM automatically on host boot?" 10 60; then
+  START_ON_BOOT=1
 fi
 
-# Display Options
-echo -e "\n${BLUE}=== Step 6: Display Configuration ===${NC}"
-echo -e "${YELLOW}VGA Type options:${NC}"
-echo "1) qxl (best for SPICE, recommended for Windows)"
-echo "2) std (standard VGA)"
-echo "3) virtio (better for Linux guests)"
-read -p "Select VGA type [1-3] (default: 1): " VGA_CHOICE < /dev/tty
-case $VGA_CHOICE in
-    2) VGA_TYPE="std" ;;
-    3) VGA_TYPE="virtio" ;;
-    *) VGA_TYPE="qxl" ;;
-esac
+# Build summary for confirmation
+SUMMARY="VM Configuration:\n\n"
+SUMMARY+="VM ID: $VMID\n"
+SUMMARY+="Name: $VMNAME\n"
+SUMMARY+="Memory: ${MEMORY}MB\n"
+SUMMARY+="CPU: ${CORES} cores, ${SOCKETS} socket(s), type ${CPU_TYPE}\n"
+SUMMARY+="Storage: $STORAGE\n"
+SUMMARY+="Disk: ${DISKSIZE}GB\n"
+SUMMARY+="SCSI: $SCSIHW\n"
+SUMMARY+="Network: $BRIDGE\n"
+SUMMARY+="VGA: $VGA_TYPE\n"
+SUMMARY+="BIOS: $BIOS_TYPE\n"
+SUMMARY+="Guest Agent: $([ $ENABLE_AGENT -eq 1 ] && echo 'Enabled' || echo 'Disabled')\n"
+SUMMARY+="Start on Boot: $([ $START_ON_BOOT -eq 1 ] && echo 'Yes' || echo 'No')"
 
-# BIOS Configuration
-echo -e "\n${YELLOW}BIOS Type:${NC}"
-echo "1) SeaBIOS (legacy BIOS, better compatibility)"
-echo "2) OVMF (UEFI, required for Windows 11, Secure Boot)"
-read -p "Select BIOS type [1-2] (default: 1): " BIOS_CHOICE < /dev/tty
-case $BIOS_CHOICE in
-    2) 
-        BIOS_TYPE="ovmf"
-        # For UEFI, we need to add EFI disk
-        EFI_DISK="--efidisk0 ${STORAGE}:1,format=raw,efitype=4m,pre-enrolled-keys=1"
-        ;;
-    *) 
-        BIOS_TYPE="seabios"
-        EFI_DISK=""
-        ;;
-esac
-
-# Additional Options
-echo -e "\n${BLUE}=== Step 7: Additional Options ===${NC}"
-read -p "Enable QEMU Guest Agent? (recommended) (y/n, default: y): " ENABLE_AGENT < /dev/tty
-ENABLE_AGENT=${ENABLE_AGENT:-y}
-
-read -p "Set VM to start on boot? (y/n, default: n): " START_ON_BOOT < /dev/tty
-START_ON_BOOT=${START_ON_BOOT:-n}
-
-# Summary
-echo -e "\n${GREEN}╔════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║     VM Configuration Summary           ║${NC}"
-echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
-echo -e "${YELLOW}VM ID:${NC} $VMID"
-echo -e "${YELLOW}VM Name:${NC} $VMNAME"
-echo -e "${YELLOW}Memory:${NC} ${MEMORY}MB"
-echo -e "${YELLOW}CPU Cores:${NC} $CORES"
-echo -e "${YELLOW}CPU Sockets:${NC} $SOCKETS"
-echo -e "${YELLOW}CPU Type:${NC} $CPU_TYPE"
-echo -e "${YELLOW}Storage:${NC} $STORAGE"
-echo -e "${YELLOW}Disk Size:${NC} ${DISKSIZE}GB"
-echo -e "${YELLOW}SCSI Controller:${NC} $SCSIHW"
-echo -e "${YELLOW}Network Bridge:${NC} $BRIDGE"
-echo -e "${YELLOW}VGA Type:${NC} $VGA_TYPE"
-echo -e "${YELLOW}BIOS Type:${NC} $BIOS_TYPE"
-echo -e "${YELLOW}ISO:${NC} $ISO_PATH"
-[ -n "$VIRTIO_ISO" ] && echo -e "${YELLOW}VirtIO ISO:${NC} $VIRTIO_ISO"
-echo -e "${YELLOW}Guest Agent:${NC} $([[ $ENABLE_AGENT =~ ^[Yy]$ ]] && echo 'Enabled' || echo 'Disabled')"
-echo -e "${YELLOW}Start on Boot:${NC} $([[ $START_ON_BOOT =~ ^[Yy]$ ]] && echo 'Yes' || echo 'No')"
-echo ""
-
-read -p "Create VM with these settings? (y/n): " CONFIRM < /dev/tty
-if [[ ! $CONFIRM =~ ^[Yy]$ ]]; then
-    echo -e "${YELLOW}Aborted.${NC}"
-    exit 0
-fi
+whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Confirm VM Creation" --yesno \
+  "$SUMMARY\n\nCreate VM with these settings?" 24 70 || die "VM creation cancelled."
 
 # Create the VM
-echo -e "\n${GREEN}Creating VM $VMID...${NC}"
+msg "Creating Windows VM $VMID..."
 
+# Build base command
 qm create $VMID \
     --name "$VMNAME" \
     --memory $MEMORY \
     --cores $CORES \
     --sockets $SOCKETS \
     --cpu $CPU_TYPE \
-    --net0 $NET_CONFIG \
+    --net0 virtio,bridge=$BRIDGE \
     --scsihw $SCSIHW \
     --bios $BIOS_TYPE \
-    --ostype win11
+    --ostype win11 \
+    --tablet 1 \
+    --smbios1 uuid=$(uuidgen) || die "Failed to create VM"
 
 # Add EFI disk if UEFI
-if [ -n "$EFI_DISK" ]; then
-    echo "Adding EFI disk..."
-    qm set $VMID $EFI_DISK
+if [ "$BIOS_TYPE" == "ovmf" ]; then
+    info "Adding EFI disk..."
+    qm set $VMID --efidisk0 ${STORAGE}:1,format=raw,efitype=4m,pre-enrolled-keys=1 || die "Failed to add EFI disk"
 fi
 
 # Add hard drive
-echo "Adding ${DISKSIZE}GB disk..."
-qm set $VMID --scsi0 ${STORAGE}:${DISKSIZE},ssd=1
+info "Adding ${DISKSIZE}GB disk..."
+qm set $VMID --scsi0 ${STORAGE}:${DISKSIZE},ssd=1 || die "Failed to add disk"
 
 # Attach Windows ISO
-echo "Attaching Windows ISO..."
-qm set $VMID --ide2 ${ISO_PATH},media=cdrom
+info "Attaching Windows ISO..."
+qm set $VMID --ide2 ${ISO_PATH},media=cdrom || die "Failed to attach ISO"
 
 # Attach VirtIO ISO if provided
 if [ -n "$VIRTIO_ISO" ]; then
-    echo "Attaching VirtIO driver ISO..."
+    info "Attaching VirtIO driver ISO..."
     qm set $VMID --ide0 ${VIRTIO_ISO},media=cdrom
 fi
 
 # Set VGA
-qm set $VMID --vga $VGA_TYPE
+qm set $VMID --vga $VGA_TYPE || die "Failed to set VGA"
 
 # Set boot order
-qm set $VMID --boot order=scsi0\;ide2
-
-# Set SMBIOS UUID
-qm set $VMID --smbios1 uuid=$(uuidgen)
+qm set $VMID --boot order=scsi0\;ide2 || die "Failed to set boot order"
 
 # Enable QEMU Guest Agent if requested
-if [[ $ENABLE_AGENT =~ ^[Yy]$ ]]; then
-    echo "Enabling QEMU Guest Agent..."
+if [ $ENABLE_AGENT -eq 1 ]; then
+    info "Enabling QEMU Guest Agent..."
     qm set $VMID --agent enabled=1
 fi
 
 # Set start on boot if requested
-if [[ $START_ON_BOOT =~ ^[Yy]$ ]]; then
-    echo "Setting VM to start on boot..."
+if [ $START_ON_BOOT -eq 1 ]; then
+    info "Setting VM to start on boot..."
     qm set $VMID --onboot 1
 fi
 
-# Enable tablet for better mouse support
-qm set $VMID --tablet 1
+header_info
+echo
+info "VM $VMID '$VMNAME' created successfully!"
+echo
 
-echo -e "\n${GREEN}╔════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║   VM $VMID Created Successfully! ✓     ║${NC}"
-echo -e "${GREEN}╚════════════════════════════════════════╝${NC}\n"
+# Save VM details to file
+CREDS_FILE=~/vm-${VMID}-${VMNAME}.info
+cat > "$CREDS_FILE" <<EOF
+Windows VM Created: $(date)
+VM ID: $VMID
+VM Name: $VMNAME
+Memory: ${MEMORY}MB
+CPU: ${CORES} cores, ${SOCKETS} socket(s)
+Disk: ${DISKSIZE}GB on $STORAGE
+ISO: $ISO_PATH
+Network: $BRIDGE
+BIOS: $BIOS_TYPE
 
-# Ask if user wants to start the VM
-read -p "Start VM now? (y/n): " START_VM < /dev/tty
-if [[ $START_VM =~ ^[Yy]$ ]]; then
-    qm start $VMID
-    echo -e "${GREEN}VM $VMID started!${NC}"
-    echo -e "\n${YELLOW}Access the VM:${NC}"
-    echo "  Console: Access via Proxmox web interface"
-    echo "  Terminal: qm terminal $VMID"
-    echo "  Monitor: qm monitor $VMID"
+Useful Commands:
+  Start VM: qm start $VMID
+  Stop VM: qm stop $VMID
+  View config: qm config $VMID
+  Console: qm terminal $VMID
+  Delete VM: qm destroy $VMID
+EOF
+
+info "VM details saved to: $CREDS_FILE"
+echo
+
+# Ask to start VM
+if whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Start VM" --yesno \
+  "VM created successfully!\n\nStart VM now?" 10 60; then
+  msg "Starting VM $VMID..."
+  qm start $VMID
+  info "VM $VMID started!"
+  echo
+  info "Access via Proxmox web interface console"
 else
-    echo -e "\n${YELLOW}VM not started. Start manually with:${NC}"
-    echo "  qm start $VMID"
+  info "VM not started. Start manually with: qm start $VMID"
 fi
 
-echo -e "\n${BLUE}Useful commands:${NC}"
-echo "  View VM config: qm config $VMID"
-echo "  Stop VM: qm stop $VMID"
-echo "  Delete VM: qm destroy $VMID"
-echo ""
+echo
+msg "Done!"
