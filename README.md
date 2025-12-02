@@ -15,7 +15,7 @@ Interactive script to quickly create Windows/Windows Server VMs in Proxmox.
 
 ```bash
 
-curl -sSL https://raw.githubusercontent.com/4EOS/ProxmoxScripts/main/windows.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/4EOS/ProxmoxScripts/main/windows.sh | bash
 
 ```
 
