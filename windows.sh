@@ -268,8 +268,7 @@ qm create $VMID \
     --scsihw $SCSIHW \
     --bios $BIOS_TYPE \
     --ostype win11 \
-    --tablet 1 \
-    --smbios1 uuid=$(uuidgen) || die "Failed to create VM"
+    --tablet 1 
 
 # Add EFI disk if UEFI
 if [ "$BIOS_TYPE" == "ovmf" ]; then
