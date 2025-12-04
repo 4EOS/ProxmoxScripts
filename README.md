@@ -31,16 +31,16 @@ bash <(curl -sSL https://raw.githubusercontent.com/4EOS/ProxmoxScripts/main/wind
 
 #### SCSI Controllers
 
-- \*\*LSI\*\* - Native Windows support, easiest setup
+- LSI - Native Windows support, easiest setup
 
-- \*\*VirtIO\*\* - Best performance (+20-30%), needs drivers
+- VirtIO - Best performance (+20-30%), needs drivers
 
-- \*\*MegaRAID\*\* - Good balance
+- MegaRAID - Good balance
 
 
 #### Windows 11
 
-Select \*\*OVMF (UEFI)\*\* for BIOS type. The script auto-configures Secure Boot and TPM.
+Select OVMF (UEFI) for BIOS type. The script auto-configures Secure Boot and TPM.
 
 
 #### VirtIO Drivers
