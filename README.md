@@ -5,6 +5,15 @@ Automation scripts for Proxmox VE to simplify VM creation and management.
 
 ---
 
+### 💬 Enable SNMP on Host 
+
+```bash
+
+bash <(curl -sSL https://raw.githubusercontent.com/4EOS/ProxmoxScripts/refs/heads/main/Setup-SNMP.sh)
+
+```
+
+---
 
 
 ### 🖥️ Windows VM Creator
