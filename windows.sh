@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Proxmox Windows VM Creator v2.0
-# Interactive Windows VM creation with whiptail menus
+# Proxmox Windows VM Creator v2.1
+# Interactive Windows VM creation with TPM 2.0 support and W11/Server 2025 optimized defaults
 
 function header_info {
   clear
@@ -125,12 +125,22 @@ function select_iso() {
   printf "$ISO"
 }
 
+# Function to detect and select VirtIO ISO
+function find_virtio_iso() {
+  local VIRTIO_FOUND=$(find /var/lib/vz/template/iso -iname "*virtio*.iso" 2>/dev/null | head -n1)
+  if [ -n "$VIRTIO_FOUND" ]; then
+    printf "$VIRTIO_FOUND"
+  else
+    printf ""
+  fi
+}
+
 header_info
 echo "Loading..."
 
 # Confirm creation
 whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Windows VM Creation" --yesno \
-  "This will create a new Windows VM on this Proxmox host.\n\nProceed?" 10 60 || die "Cancelled by user."
+  "This will create a new Windows 11/Server 2025 compatible VM.\n\nProceed?" 10 60 || die "Cancelled by user."
 
 # Get next available VM ID or allow custom
 NEXT_VMID=$(pvesh get /cluster/nextid)
@@ -152,13 +162,13 @@ VMNAME=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "VM Name
 ISO_PATH=$(select_iso)
 info "Selected ISO: $ISO_PATH"
 
-# Memory configuration
+# Memory configuration - default to 8GB for modern Windows
 MEMORY=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Memory Allocation" --inputbox \
-  "Enter memory in MB:" 10 60 "4096" 3>&1 1>&2 2>&3) || die "Memory input cancelled."
+  "Enter memory in MB (8GB recommended for W11/Server 2025):" 10 60 "8192" 3>&1 1>&2 2>&3) || die "Memory input cancelled."
 
-# CPU Cores
+# CPU Cores - default to 4 for modern Windows
 CORES=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "CPU Cores" --inputbox \
-  "Enter number of CPU cores:" 10 60 "2" 3>&1 1>&2 2>&3) || die "CPU cores input cancelled."
+  "Enter number of CPU cores:" 10 60 "4" 3>&1 1>&2 2>&3) || die "CPU cores input cancelled."
 
 # CPU Sockets
 SOCKETS=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "CPU Sockets" --inputbox \
@@ -179,27 +189,25 @@ info "Using storage: $STORAGE"
 DISKSIZE=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Disk Size" --inputbox \
   "Enter disk size in GB:" 10 60 "100" 3>&1 1>&2 2>&3) || die "Disk size input cancelled."
 
-# SCSI Controller
+# SCSI Controller - VirtIO SCSI is now default with fallback to LSI
 SCSIHW=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "SCSI Controller" --radiolist \
   "Select SCSI controller type:\n" 14 70 3 \
-  "lsi" "LSI Logic SAS (recommended, native Windows)" ON \
-  "virtio-scsi-pci" "VirtIO SCSI (best performance, needs drivers)" OFF \
+  "virtio-scsi-pci" "VirtIO SCSI (best performance, recommended)" ON \
+  "lsi" "LSI Logic SAS (native Windows, slower)" OFF \
   "megasas" "MegaRAID SAS" OFF \
   3>&1 1>&2 2>&3) || die "SCSI controller selection cancelled."
 
-# Check for VirtIO ISO if needed
-VIRTIO_ISO=""
+# Auto-detect VirtIO ISO
+VIRTIO_ISO=$(find_virtio_iso)
 if [ "$SCSIHW" == "virtio-scsi-pci" ]; then
-  if whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "VirtIO Drivers" --yesno \
-    "VirtIO SCSI requires drivers during Windows installation.\n\nDo you have the VirtIO driver ISO available?" 12 60; then
-    
-    # Try to find VirtIO ISO automatically
-    VIRTIO_FOUND=$(find /var/lib/vz/template/iso -name "*virtio*.iso" 2>/dev/null | head -n1)
-    if [ -n "$VIRTIO_FOUND" ]; then
-      VIRTIO_ISO="$VIRTIO_FOUND"
-      info "Found VirtIO ISO: $VIRTIO_ISO"
-    else
-      warn "No VirtIO ISO found automatically. Download from: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/"
+  if [ -n "$VIRTIO_ISO" ]; then
+    info "Found VirtIO ISO: $VIRTIO_ISO"
+  else
+    warn "VirtIO SCSI selected but no VirtIO driver ISO found!"
+    warn "Download from: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/"
+    if ! whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "VirtIO Warning" --yesno \
+      "VirtIO drivers not found. Windows installation may fail.\n\nContinue anyway?" 10 60; then
+      die "VirtIO ISO required for installation."
     fi
   fi
 fi
@@ -208,7 +216,7 @@ fi
 BRIDGE=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Network Bridge" --inputbox \
   "Enter network bridge:" 10 60 "vmbr0" 3>&1 1>&2 2>&3) || die "Network bridge input cancelled."
 
-# VGA Type
+# VGA Type - QXL is best for Windows
 VGA_TYPE=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Display Type" --radiolist \
   "Select VGA type:\n" 13 70 3 \
   "qxl" "QXL (best for Windows/SPICE)" ON \
@@ -216,18 +224,27 @@ VGA_TYPE=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Displ
   "virtio" "VirtIO (better for Linux)" OFF \
   3>&1 1>&2 2>&3) || die "VGA type selection cancelled."
 
-# BIOS Type
+# BIOS Type - UEFI is now default for Windows 11 compatibility
 BIOS_TYPE=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "BIOS Type" --radiolist \
   "Select BIOS type:\n" 12 70 2 \
-  "seabios" "SeaBIOS (legacy BIOS, compatible)" ON \
-  "ovmf" "OVMF (UEFI, required for Windows 11)" OFF \
+  "ovmf" "UEFI (required for Windows 11, recommended)" ON \
+  "seabios" "Legacy BIOS (older Windows versions)" OFF \
   3>&1 1>&2 2>&3) || die "BIOS type selection cancelled."
 
+# TPM 2.0 Support - only available with UEFI
+ENABLE_TPM=0
+if [ "$BIOS_TYPE" == "ovmf" ]; then
+  if whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "TPM 2.0" --yesno \
+    "Enable TPM 2.0?\n(Required for Windows 11, recommended for Server 2025)" 10 60; then
+    ENABLE_TPM=1
+  fi
+fi
+
 # Additional options
-ENABLE_AGENT=0
-if whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "QEMU Guest Agent" --yesno \
+ENABLE_AGENT=1  # Default to enabled
+if ! whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "QEMU Guest Agent" --yesno \
   "Enable QEMU Guest Agent?\n(Recommended for better VM integration)" 10 60; then
-  ENABLE_AGENT=1
+  ENABLE_AGENT=0
 fi
 
 START_ON_BOOT=0
@@ -248,11 +265,12 @@ SUMMARY+="SCSI: $SCSIHW\n"
 SUMMARY+="Network: $BRIDGE\n"
 SUMMARY+="VGA: $VGA_TYPE\n"
 SUMMARY+="BIOS: $BIOS_TYPE\n"
+SUMMARY+="TPM 2.0: $([ $ENABLE_TPM -eq 1 ] && echo 'Enabled' || echo 'Disabled')\n"
 SUMMARY+="Guest Agent: $([ $ENABLE_AGENT -eq 1 ] && echo 'Enabled' || echo 'Disabled')\n"
 SUMMARY+="Start on Boot: $([ $START_ON_BOOT -eq 1 ] && echo 'Yes' || echo 'No')"
 
 whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Confirm VM Creation" --yesno \
-  "$SUMMARY\n\nCreate VM with these settings?" 24 70 || die "VM creation cancelled."
+  "$SUMMARY\n\nCreate VM with these settings?" 26 70 || die "VM creation cancelled."
 
 # Create the VM
 msg "Creating Windows VM $VMID..."
@@ -268,12 +286,18 @@ qm create $VMID \
     --scsihw $SCSIHW \
     --bios $BIOS_TYPE \
     --ostype win11 \
-    --tablet 1 
+    --tablet 1
 
 # Add EFI disk if UEFI
 if [ "$BIOS_TYPE" == "ovmf" ]; then
     info "Adding EFI disk..."
     qm set $VMID --efidisk0 ${STORAGE}:1,format=raw,efitype=4m,pre-enrolled-keys=1 || die "Failed to add EFI disk"
+fi
+
+# Add TPM 2.0 if enabled
+if [ $ENABLE_TPM -eq 1 ]; then
+    info "Adding TPM 2.0 state..."
+    qm set $VMID --tpmstate0 ${STORAGE}:1,version=v2.0 || die "Failed to add TPM state"
 fi
 
 # Add hard drive
@@ -284,7 +308,7 @@ qm set $VMID --scsi0 ${STORAGE}:${DISKSIZE},ssd=1 || die "Failed to add disk"
 info "Attaching Windows ISO..."
 qm set $VMID --ide2 ${ISO_PATH},media=cdrom || die "Failed to attach ISO"
 
-# Attach VirtIO ISO if provided
+# Attach VirtIO ISO if available
 if [ -n "$VIRTIO_ISO" ]; then
     info "Attaching VirtIO driver ISO..."
     qm set $VMID --ide0 ${VIRTIO_ISO},media=cdrom
@@ -320,11 +344,21 @@ Windows VM Created: $(date)
 VM ID: $VMID
 VM Name: $VMNAME
 Memory: ${MEMORY}MB
-CPU: ${CORES} cores, ${SOCKETS} socket(s)
+CPU: ${CORES} cores, ${SOCKETS} socket(s), type ${CPU_TYPE}
 Disk: ${DISKSIZE}GB on $STORAGE
+SCSI Controller: $SCSIHW
 ISO: $ISO_PATH
+$([ -n "$VIRTIO_ISO" ] && echo "VirtIO ISO: $VIRTIO_ISO")
 Network: $BRIDGE
 BIOS: $BIOS_TYPE
+TPM 2.0: $([ $ENABLE_TPM -eq 1 ] && echo 'Enabled' || echo 'Disabled')
+Guest Agent: $([ $ENABLE_AGENT -eq 1 ] && echo 'Enabled' || echo 'Disabled')
+
+Installation Notes:
+  - Windows 11 requires TPM 2.0 (enabled: $([ $ENABLE_TPM -eq 1 ] && echo 'yes' || echo 'NO - may fail!'))
+  - If using VirtIO SCSI, load drivers during Windows install from the VirtIO ISO
+  - Install QEMU Guest Agent after Windows installation for better integration
+  - For VirtIO network, install VirtIO network drivers from the VirtIO ISO
 
 Useful Commands:
   Start VM: qm start $VMID
@@ -332,10 +366,26 @@ Useful Commands:
   View config: qm config $VMID
   Console: qm terminal $VMID
   Delete VM: qm destroy $VMID
+  
+Driver Downloads:
+  VirtIO Drivers: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/
+  QEMU Guest Agent: Install from VirtIO ISO or Windows guest tools
 EOF
 
 info "VM details saved to: $CREDS_FILE"
 echo
+
+# Display important notes
+if [ $ENABLE_TPM -eq 0 ] && [ "$BIOS_TYPE" == "ovmf" ]; then
+  warn "Windows 11 requires TPM 2.0. Your VM may fail installation!"
+fi
+
+if [ "$SCSIHW" == "virtio-scsi-pci" ]; then
+  info "VirtIO SCSI requires driver installation during Windows setup:"
+  echo "  1. Click 'Load driver' when selecting installation disk"
+  echo "  2. Browse to the VirtIO CD drive"
+  echo "  3. Select the appropriate driver folder for your Windows version"
+fi
 
 # Ask to start VM
 if whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Start VM" --yesno \
