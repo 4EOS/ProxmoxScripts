@@ -135,6 +135,32 @@ function find_virtio_iso() {
   fi
 }
 
+# Function to download VirtIO ISO if not found
+function download_virtio_iso() {
+  local ISO_DIR="/var/lib/vz/template/iso"
+  local VIRTIO_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso"
+  local VIRTIO_PATH="${ISO_DIR}/virtio-win.iso"
+  
+  if [ -f "$VIRTIO_PATH" ]; then
+    info "VirtIO ISO already exists at $VIRTIO_PATH"
+    printf "$VIRTIO_PATH"
+    return 0
+  fi
+  
+  info "Downloading VirtIO drivers ISO..."
+  info "This may take a few minutes..."
+  
+  if ! wget --show-progress -q -O "$VIRTIO_PATH" "$VIRTIO_URL"; then
+    warn "Failed to download VirtIO ISO from $VIRTIO_URL"
+    rm -f "$VIRTIO_PATH"
+    return 1
+  fi
+  
+  info "VirtIO ISO downloaded successfully to $VIRTIO_PATH"
+  printf "$VIRTIO_PATH"
+  return 0
+}
+
 header_info
 echo "Loading..."
 
@@ -197,18 +223,49 @@ SCSIHW=$(whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "SCSI Co
   "megasas" "MegaRAID SAS" OFF \
   3>&1 1>&2 2>&3) || die "SCSI controller selection cancelled."
 
-# Auto-detect VirtIO ISO
+# Auto-detect or download VirtIO ISO
 VIRTIO_ISO=$(find_virtio_iso)
-if [ "$SCSIHW" == "virtio-scsi-pci" ]; then
-  if [ -n "$VIRTIO_ISO" ]; then
-    info "Found VirtIO ISO: $VIRTIO_ISO"
-  else
-    warn "VirtIO SCSI selected but no VirtIO driver ISO found!"
-    warn "Download from: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/"
-    if ! whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "VirtIO Warning" --yesno \
-      "VirtIO drivers not found. Windows installation may fail.\n\nContinue anyway?" 10 60; then
-      die "VirtIO ISO required for installation."
+ATTACH_VIRTIO=1  # Default to attaching VirtIO ISO
+
+if [ -z "$VIRTIO_ISO" ]; then
+  # No VirtIO ISO found, offer to download
+  if whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "VirtIO Drivers" --yesno \
+    "VirtIO driver ISO not found locally.\n\nDownload latest VirtIO ISO from Fedora?\n(Recommended for best performance and compatibility)\n\nSize: ~500MB" 14 70; then
+    
+    VIRTIO_ISO=$(download_virtio_iso)
+    if [ -z "$VIRTIO_ISO" ]; then
+      warn "Failed to download VirtIO ISO"
+      if [ "$SCSIHW" == "virtio-scsi-pci" ]; then
+        if ! whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "VirtIO Warning" --yesno \
+          "VirtIO drivers not available. Windows installation will fail.\n\nSwitch to LSI SCSI controller instead?" 12 60; then
+          die "VirtIO drivers required for installation."
+        else
+          SCSIHW="lsi"
+          ATTACH_VIRTIO=0
+          info "Switched to LSI SCSI controller"
+        fi
+      fi
     fi
+  else
+    # User declined download
+    if [ "$SCSIHW" == "virtio-scsi-pci" ]; then
+      warn "VirtIO SCSI selected but drivers not available!"
+      if ! whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "VirtIO Warning" --yesno \
+        "VirtIO drivers not found. Windows installation will fail.\n\nSwitch to LSI SCSI controller instead?" 12 60; then
+        die "VirtIO drivers required for installation."
+      else
+        SCSIHW="lsi"
+        ATTACH_VIRTIO=0
+        info "Switched to LSI SCSI controller"
+      fi
+    fi
+  fi
+else
+  info "Found VirtIO ISO: $VIRTIO_ISO"
+  # VirtIO ISO exists, ask if user wants to attach it (default yes)
+  if ! whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "VirtIO Drivers" --yesno \
+    "VirtIO driver ISO found.\n\nAttach VirtIO drivers to VM?\n(Recommended for storage and network drivers)" 12 60; then
+    ATTACH_VIRTIO=0
   fi
 fi
 
@@ -266,11 +323,12 @@ SUMMARY+="Network: $BRIDGE\n"
 SUMMARY+="VGA: $VGA_TYPE\n"
 SUMMARY+="BIOS: $BIOS_TYPE\n"
 SUMMARY+="TPM 2.0: $([ $ENABLE_TPM -eq 1 ] && echo 'Enabled' || echo 'Disabled')\n"
+SUMMARY+="VirtIO ISO: $([ $ATTACH_VIRTIO -eq 1 ] && [ -n "$VIRTIO_ISO" ] && echo 'Attached' || echo 'Not attached')\n"
 SUMMARY+="Guest Agent: $([ $ENABLE_AGENT -eq 1 ] && echo 'Enabled' || echo 'Disabled')\n"
 SUMMARY+="Start on Boot: $([ $START_ON_BOOT -eq 1 ] && echo 'Yes' || echo 'No')"
 
 whiptail --backtitle "Proxmox VE - Windows VM Creator" --title "Confirm VM Creation" --yesno \
-  "$SUMMARY\n\nCreate VM with these settings?" 26 70 || die "VM creation cancelled."
+  "$SUMMARY\n\nCreate VM with these settings?" 28 70 || die "VM creation cancelled."
 
 # Create the VM
 msg "Creating Windows VM $VMID..."
@@ -308,8 +366,8 @@ qm set $VMID --scsi0 ${STORAGE}:${DISKSIZE},ssd=1 || die "Failed to add disk"
 info "Attaching Windows ISO..."
 qm set $VMID --ide2 ${ISO_PATH},media=cdrom || die "Failed to attach ISO"
 
-# Attach VirtIO ISO if available
-if [ -n "$VIRTIO_ISO" ]; then
+# Attach VirtIO ISO if available and user wants it
+if [ $ATTACH_VIRTIO -eq 1 ] && [ -n "$VIRTIO_ISO" ]; then
     info "Attaching VirtIO driver ISO..."
     qm set $VMID --ide0 ${VIRTIO_ISO},media=cdrom
 fi
@@ -348,7 +406,7 @@ CPU: ${CORES} cores, ${SOCKETS} socket(s), type ${CPU_TYPE}
 Disk: ${DISKSIZE}GB on $STORAGE
 SCSI Controller: $SCSIHW
 ISO: $ISO_PATH
-$([ -n "$VIRTIO_ISO" ] && echo "VirtIO ISO: $VIRTIO_ISO")
+$([ $ATTACH_VIRTIO -eq 1 ] && [ -n "$VIRTIO_ISO" ] && echo "VirtIO ISO: $VIRTIO_ISO (attached)")
 Network: $BRIDGE
 BIOS: $BIOS_TYPE
 TPM 2.0: $([ $ENABLE_TPM -eq 1 ] && echo 'Enabled' || echo 'Disabled')
@@ -356,9 +414,11 @@ Guest Agent: $([ $ENABLE_AGENT -eq 1 ] && echo 'Enabled' || echo 'Disabled')
 
 Installation Notes:
   - Windows 11 requires TPM 2.0 (enabled: $([ $ENABLE_TPM -eq 1 ] && echo 'yes' || echo 'NO - may fail!'))
-  - If using VirtIO SCSI, load drivers during Windows install from the VirtIO ISO
+$([ "$SCSIHW" == "virtio-scsi-pci" ] && echo "  - VirtIO SCSI: Load drivers during Windows install from VirtIO ISO")
+$([ "$SCSIHW" == "virtio-scsi-pci" ] && echo "    1. Click 'Load driver' at disk selection screen")
+$([ "$SCSIHW" == "virtio-scsi-pci" ] && echo "    2. Browse to VirtIO CD, select vioscsi\\w11\\amd64")
   - Install QEMU Guest Agent after Windows installation for better integration
-  - For VirtIO network, install VirtIO network drivers from the VirtIO ISO
+  - Network adapter is VirtIO - install drivers from VirtIO ISO if needed
 
 Useful Commands:
   Start VM: qm start $VMID
@@ -380,11 +440,18 @@ if [ $ENABLE_TPM -eq 0 ] && [ "$BIOS_TYPE" == "ovmf" ]; then
   warn "Windows 11 requires TPM 2.0. Your VM may fail installation!"
 fi
 
-if [ "$SCSIHW" == "virtio-scsi-pci" ]; then
-  info "VirtIO SCSI requires driver installation during Windows setup:"
-  echo "  1. Click 'Load driver' when selecting installation disk"
-  echo "  2. Browse to the VirtIO CD drive"
-  echo "  3. Select the appropriate driver folder for your Windows version"
+if [ "$SCSIHW" == "virtio-scsi-pci" ] && [ $ATTACH_VIRTIO -eq 1 ]; then
+  echo
+  info "IMPORTANT: VirtIO SCSI driver installation required!"
+  echo "  During Windows installation when selecting disk:"
+  echo "  1. Click 'Load driver' (disk will not show without this)"
+  echo "  2. Click 'Browse' and select the VirtIO CD drive"
+  echo "  3. Navigate to: vioscsi\\w11\\amd64 (or w2k25 for Server 2025)"
+  echo "  4. Click OK to load the driver"
+  echo "  5. Your disk should now appear in the list"
+  echo
+elif [ "$SCSIHW" == "virtio-scsi-pci" ] && [ $ATTACH_VIRTIO -eq 0 ]; then
+  warn "VirtIO SCSI selected but VirtIO ISO not attached - installation will fail!"
 fi
 
 # Ask to start VM
