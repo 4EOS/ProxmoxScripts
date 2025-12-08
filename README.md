@@ -40,24 +40,11 @@ bash <(curl -sSL https://raw.githubusercontent.com/4EOS/ProxmoxScripts/main/wind
 
 #### SCSI Controllers
 
+- VirtIO - Best performance (+20-30%), needs drivers installed during setup which get added automatically
+
 - LSI - Native Windows support, easiest setup
-
-- VirtIO - Best performance (+20-30%), needs drivers
-
-- MegaRAID - Good balance
 
 
 #### Windows 11
 
 Select OVMF (UEFI) for BIOS type. The script auto-configures Secure Boot and TPM.
-
-
-#### VirtIO Drivers
-
-For VirtIO SCSI performance:
-
-1. Download: https://fedorapeople.org/groups/virt/virtio-win/
-
-2. Place in `/var/lib/vz/template/iso/`
-
-3. Load during Windows installation
