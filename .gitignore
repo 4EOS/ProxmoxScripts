@@ -1,0 +1,27 @@
+# Acronis registration keys - sensitive data
+acronis/acronis_registrationkeys.json
+
+# Other sensitive files
+*.key
+*.pem
+*.p12
+*.pfx
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Log files
+*.log
