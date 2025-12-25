@@ -101,12 +101,12 @@ Register using a **client token** from the JSON output:
   --quiet \
   --registration by-token \
   --reg-token "CLIENT_REGISTRATION_TOKEN" \
-  --reg-address "https://us-cloud.acronis.com"
+  --reg-address "https://us15-cloud.acronis.com"
 ```
 
 Replace the address if needed:
 
-* US: `https://us-cloud.acronis.com`
+* US: `https://us15-cloud.acronis.com`
 * EU: `https://eu-cloud.acronis.com`
 * EU2: `https://eu2-cloud.acronis.com`
 * APAC: `https://ap-cloud.acronis.com`
